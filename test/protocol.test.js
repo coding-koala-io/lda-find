@@ -148,18 +148,18 @@ test('E11: multi-search JSON content type, LF/CRLF pairs, scope and component or
 
 test('error contracts: invalid JSON, media type, unsupported operations/options and body limit', async t => {
   const {request} = await gateway(t, {maxBodyBytes: 512});
-  for (const [path, method, body, expected] of [
+  for (const [path, method, body, expected, bodyStatus = expected] of [
     ['/pages/_search', 'POST', '{broken', 400],
     ['/pages/_search', 'POST', {query: {unknown: {}}}, 400],
     ['/pages/_search', 'POST', {script_fields: {}}, 400],
     ['/pages/_mapping', 'GET', undefined, 501],
     ['/_stream', 'POST', {}, 501],
-    ['/pages/Synthetic_Page/x/_update', 'POST', {script: 'anything'}, 501],
-    ['/pages/Synthetic_Page/x?ttl=1000', 'PUT', {}, 400],
+    ['/pages/Synthetic_Page/x/_update', 'POST', {script: 'anything'}, 501, '501'],
+    ['/pages/Synthetic_Page/x?ttl=invalid', 'PUT', {}, 400],
     ['/pages/Synthetic_Page/x', 'PUT', 'x'.repeat(513), 413],
   ]) {
     const result = await request(path, {method, body});
-    assert.equal(result.status, expected, path); assert.equal(typeof result.data.error, 'string'); assert.equal(result.data.status, expected);
+    assert.equal(result.status, expected, path); assert.equal(typeof result.data.error, 'string'); assert.equal(result.data.status, bodyStatus);
   }
   assert.equal((await request('/pages/Synthetic_Page/x', {method: 'PUT', body: '{}', headers: {'Content-Type': 'text/plain'}})).status, 415);
   assert.equal((await request('/pages/_config', {headers: {Origin: 'https://external.invalid'}})).status, 403);

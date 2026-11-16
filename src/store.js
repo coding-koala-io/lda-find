@@ -9,7 +9,8 @@ const identity = (index, type, id) => JSON.stringify([index, type, id]);
 
 /** One process owns a store. A completed write is visible and saved before acknowledgement. */
 export class Store {
-  constructor({dataDir, dataRoot} = {}) {
+  constructor({dataDir, dataRoot, now = Date.now} = {}) {
+    this.now = now;
     this.dataDir = storageDirectory(dataDir === ':memory:' ? undefined : dataDir, dataRoot);
     this.docs = new Map();
     this.indices = new Map();
@@ -28,6 +29,8 @@ export class Store {
       this.validateIdentity(doc.index, doc.type, doc.id);
       object(doc.source, 'Stored source');
       if (!Number.isSafeInteger(doc.version) || doc.version < 1) throw new Error('Invalid stored version');
+      if (doc.expiresAt !== undefined && (!Number.isSafeInteger(doc.expiresAt) || doc.expiresAt < 0)) throw new Error('Invalid stored expiry');
+      if (doc.parent !== undefined && (typeof doc.parent !== 'string' || !doc.parent.length)) throw new Error('Invalid stored parent');
       const key = identity(doc.index, doc.type, doc.id);
       if (this.docs.has(key)) throw new Error('Duplicate stored identity');
       this.docs.set(key, doc);
@@ -39,7 +42,8 @@ export class Store {
     if ([index, type].some(value => value.startsWith('_') || value.includes(','))) throw new HttpError(400, 'Writes require a concrete index and type');
   }
 
-  get(index, type, id) { return this.docs.get(identity(index, type, id)); }
+  live(doc, now = this.now()) { return doc && (doc.expiresAt === undefined || doc.expiresAt > now); }
+  get(index, type, id) { const doc = this.docs.get(identity(index, type, id)); return this.live(doc) ? doc : undefined; }
   settings(index) { return this.indices.get(index) ?? {refresh: true, languages: []}; }
 
   /** Roll back memory if the atomic file replacement fails. */
@@ -48,6 +52,8 @@ export class Store {
     this.docs = new Map(this.docs);
     this.indices = new Map(structuredClone([...this.indices]));
     try {
+      const now = this.now();
+      for (const [key, doc] of this.docs) if (!this.live(doc, now)) this.docs.delete(key);
       const result = operation();
       if (this.file) {
         checkStoragePaths(this.dataDir);
@@ -73,25 +79,38 @@ export class Store {
     return this.indices.get(index);
   }
 
-  put(index, type, id = randomUUID(), source, {create = false, language} = {}) {
+  checkVersion(previous, version) {
+    if (version !== undefined && previous?.version !== version) throw new HttpError(409, 'Document version conflict');
+  }
+
+  put(index, type, id = randomUUID(), source, {create = false, language, version: expectedVersion, ttl, parent} = {}) {
     this.validateIdentity(index, type, id); object(source, 'Document');
     const previous = this.get(index, type, id);
     if (create && previous) throw new HttpError(409, 'Document already exists');
+    this.checkVersion(previous, expectedVersion);
     const version = (previous?.version ?? 0) + 1;
-    this.docs.set(identity(index, type, id), {index, type, id, version, source: structuredClone(source)});
+    if (!Number.isSafeInteger(version)) throw new HttpError(409, 'Document version limit reached');
+    const expiresAt = ttl === undefined ? undefined : this.now() + ttl;
+    if (expiresAt !== undefined && !Number.isSafeInteger(expiresAt)) throw new HttpError(400, 'TTL deadline exceeds the local time range');
+    parent ??= previous?.parent;
+    this.docs.set(identity(index, type, id), {index, type, id, version, source: structuredClone(source), ...(expiresAt !== undefined ? {expiresAt} : {}), ...(parent !== undefined ? {parent} : {})});
     const settings = this.ensureIndex(index);
     if (language && !settings.languages.includes(language)) settings.languages.push(language);
     return {ok: true, _index: index, _type: type, _id: id, _version: version};
   }
 
-  delete(index, type, id) {
+  delete(index, type, id, {version} = {}) {
     this.validateIdentity(index, type, id);
-    const found = this.docs.delete(identity(index, type, id));
+    const previous = this.get(index, type, id);
+    this.checkVersion(previous, version);
+    this.docs.delete(identity(index, type, id));
+    const found = Boolean(previous);
     return {ok: true, _index: index, _type: type, _id: id, found};
   }
 
   select(indices, types) {
-    return [...this.docs.values()].filter(doc => (!indices || indices.includes(doc.index)) && (!types || types.includes(doc.type)));
+    const now = this.now();
+    return [...this.docs.values()].filter(doc => this.live(doc, now) && (!indices || indices.includes(doc.index)) && (!types || types.includes(doc.type)));
   }
 
   indexNames(indices) { return indices ?? [...new Set([...this.indices.keys(), ...[...this.docs.values()].map(doc => doc.index)])]; }

@@ -3,6 +3,7 @@ import {search, shards} from './search.js';
 import {compile} from './query.js';
 import {project} from './fields.js';
 import {parse} from './precise-json.js';
+import {queryWriteOptions, bulkWriteOptions} from './write-options.js';
 
 export function selection(value) {
   if (value === undefined || value === '' || value === '_all') return undefined;
@@ -27,11 +28,6 @@ function linePairs(text, label) {
   return lines.map(line => json(line));
 }
 
-function writeOptions(params) {
-  for (const name of ['version', 'ttl', 'consistency', 'percolate', 'parent', 'replication']) if (params.has(name)) unsupported(`write option: ${name}`);
-  return {language: params.get('language_routing') || undefined};
-}
-
 function bulk(store, text) {
   const started = performance.now(); const lines = linePairs(text, 'Bulk'); const operations = [];
   for (let i = 0; i < lines.length; i++) {
@@ -44,9 +40,8 @@ function bulk(store, text) {
   }
   const items = store.transaction(() => operations.map(({action, metadata, source}) => {
     try {
-      keys(metadata, ['_index', '_type', '_id', '_routing', 'language_routing', 'refresh'], 'bulk metadata');
-      if (metadata.language_routing !== undefined && typeof metadata.language_routing !== 'string') throw new HttpError(400, 'Language routing must be text');
-      const result = action === 'delete' ? store.delete(metadata._index, metadata._type, metadata._id) : store.put(metadata._index, metadata._type, metadata._id, source, {create: action === 'create', language: metadata.language_routing});
+      const options = bulkWriteOptions(metadata, action);
+      const result = action === 'delete' ? store.delete(metadata._index, metadata._type, metadata._id, options) : store.put(metadata._index, metadata._type, metadata._id, source, {...options, create: action === 'create'});
       return {[action]: result};
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
@@ -65,7 +60,10 @@ function getDocument(store, index, type, id, fields) {
 export function handleProtocol({store, method, segments, params, text, send}) {
   const route = segments.join('/');
   if (route === 'features' && method === 'GET') return send(200, {status: 'ok', features: []});
-  if (route === '_bulk' && method === 'POST') return send(200, bulk(store, text));
+  if (route === '_bulk' && method === 'POST') {
+    queryWriteOptions(params, 'bulk');
+    return send(200, bulk(store, text));
+  }
   if (route === '_msearch' && method === 'POST') {
     const lines = linePairs(text, 'Multi-search');
     if (lines.length % 2) throw new HttpError(400, 'Multi-search needs metadata/body pairs');
@@ -78,6 +76,12 @@ export function handleProtocol({store, method, segments, params, text, send}) {
     return send(200, {responses});
   }
   const [index, type, id, extra] = segments;
+  if (segments.length === 4 && extra === '_update' && method === 'POST') {
+    return send(501, {
+      error: 'E06 field updates are not enabled in this Local Find profile. Reindex the complete document, or enable explicit field-update support.',
+      status: '501',
+    });
+  }
   if (segments.length === 2 && type === '_config' && method === 'GET') {
     if (!selection(index) || index.includes(',')) throw new HttpError(400, 'Settings require one index');
     return send(200, {status: 'ok', item: {stats: false, admin: false, languages: ['en'], connectors: false, max_docs: null, version: '1.0'}}, {has_documents_limit: 'false', documents_used: String(store.select([index]).length)});
@@ -122,13 +126,13 @@ export function handleProtocol({store, method, segments, params, text, send}) {
   }
   if (index?.startsWith('_') || type?.startsWith('_') || extra?.startsWith('_')) throw new HttpError(501, 'This operation is outside the local profile');
   if (segments.length === 2 && method === 'POST') {
-    const options = writeOptions(params);
+    const options = queryWriteOptions(params, 'index');
     return send(201, store.transaction(() => store.put(index, type, undefined, json(text), options)));
   }
   if (segments.length === 3) {
     store.validateIdentity(index, type, id);
     if (method === 'PUT') {
-      const options = writeOptions(params); const exists = store.get(index, type, id);
+      const options = queryWriteOptions(params, 'index'); const exists = store.get(index, type, id);
       const result = store.transaction(() => store.put(index, type, id, json(text), options));
       return send(exists ? 200 : 201, result);
     }
@@ -138,11 +142,10 @@ export function handleProtocol({store, method, segments, params, text, send}) {
       return send(result.exists ? 200 : 404, result);
     }
     if (method === 'DELETE') {
-      writeOptions(params);
-      const result = store.transaction(() => store.delete(index, type, id));
+      const options = queryWriteOptions(params, 'delete');
+      const result = store.transaction(() => store.delete(index, type, id, options));
       return send(result.found ? 200 : 404, result);
     }
   }
-  if (extra === '_update') throw new HttpError(501, 'Script updates are outside the local profile');
   throw new HttpError(404, 'Route is not available');
 }

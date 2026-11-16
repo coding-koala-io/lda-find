@@ -47,6 +47,34 @@ test('unreadable/corrupt store prevents startup instead of silently discarding c
   assert.throws(() => new Store({dataDir}), /Invalid/);
 });
 
+test('TTL deadlines and parent metadata survive restart; failed saves roll back conditional mutations', async t => {
+  let now = Date.parse('2026-11-17T12:00:00Z');
+  const dataDir = temporary(t);
+  const first = await gateway(t, {dataDir, now: () => now});
+  const path = '/pages/Synthetic_Page/expiring';
+  assert.equal((await first.request(`${path}?ttl=1000&parent=parent-a`, {method: 'PUT', body: {value: 1}})).status, 201);
+  now += 500;
+  const second = await gateway(t, {dataDir, now: () => now});
+  assert.deepEqual((await second.request(`${path}?fields=_parent`)).data.fields, {_parent: 'parent-a'});
+  assert.equal((await second.request(path)).data._version, 1);
+  mkdirSync(join(dataDir, 'store.json.tmp'));
+  assert.equal((await second.request(`${path}?version=1&ttl=10000&parent=parent-b`, {method: 'PUT', body: {value: 2}})).status, 500);
+  assert.equal((await second.request(`${path}?version=1`, {method: 'DELETE'})).status, 500);
+  const retained = second.server.store.get('pages', 'Synthetic_Page', 'expiring');
+  assert.equal(retained.version, 1);
+  assert.equal(retained.parent, 'parent-a');
+  assert.deepEqual(retained.source, {value: 1});
+  assert.equal(retained.expiresAt, now + 500);
+  rmdirSync(join(dataDir, 'store.json.tmp'));
+  now += 500;
+  assert.equal((await second.request(path)).status, 404);
+  const third = await gateway(t, {dataDir, now: () => now});
+  assert.equal((await third.request(path)).status, 404);
+  assert.equal((await third.search()).hits.total, 0);
+  assert.equal((await third.request(`${path}?ttl=1000&parent=parent-c`, {method: 'PUT', body: {value: 3}})).status, 201);
+  assert.equal((await third.request(path)).data._version, 1);
+});
+
 test('failed disk persistence returns HTTP 500 and rolls back documents, versions and settings', async t => {
   const dataDir = temporary(t); const {request, put, search, server} = await gateway(t, {dataDir});
   await put('one', page(1));

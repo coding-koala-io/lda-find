@@ -1,4 +1,5 @@
 const own = (value, key) => value != null && typeof value === 'object' && Object.hasOwn(value, key);
+const metadataFields = new Set(['_id', '_type', '_index', '_version', '_parent']);
 export const words = value => String(value).toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
 
 /** Read exact submitted keys first, then dotted paths through objects and arrays. */
@@ -16,6 +17,8 @@ export function fieldValues(doc, field) {
   if (field === '_id') return [doc.id];
   if (field === '_type') return [doc.type];
   if (field === '_index') return [doc.index];
+  if (field === '_version') return [doc.version];
+  if (field === '_parent') return doc.parent === undefined ? [] : [doc.parent];
   if (field === '_all') return strings(doc.source);
   const exact = read(doc.source, field).flat(Infinity).filter(value => value != null);
   if (exact.length) return exact;
@@ -64,7 +67,7 @@ export function project(doc, fields) {
     }
   }
   for (const field of fields) {
-    const selected = pick(doc.source, field.split('.'));
+    const selected = metadataFields.has(field) ? absent : pick(doc.source, field.split('.'));
     if (selected !== absent) merge(result, selected);
     else {
       const values = fieldValues(doc, field);
