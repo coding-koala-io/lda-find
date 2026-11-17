@@ -1,5 +1,9 @@
+// Fixed codes only: exception messages can contain user-supplied field names.
+const codes = {400: 'bad_request', 403: 'forbidden', 404: 'not_found', 409: 'conflict', 413: 'payload_too_large', 415: 'unsupported_media_type', 499: 'request_closed', 500: 'internal_error', 501: 'not_implemented'};
+export const errorCode = status => codes[status] ?? 'http_error';
+
 export class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, code = errorCode(status)) { super(message); this.status = status; this.code = code; }
 }
 
 export function object(value, label = 'Value') {

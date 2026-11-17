@@ -16,6 +16,7 @@ function temporary(t, root = join(defaultDataRoot, '.test-runtime')) {
     const target = resolve(directory);
     if (!target.startsWith(root + sep)) throw new Error('Test cleanup escaped its directory');
     rmSync(target, {recursive: true, force: true});
+    try { rmdirSync(root); } catch (error) { if (!['ENOTEMPTY', 'ENOENT', 'EEXIST'].includes(error.code)) throw error; }
   });
   return directory;
 }

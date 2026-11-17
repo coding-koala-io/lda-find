@@ -1,16 +1,20 @@
-import {mkdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync} from 'node:fs';
+import {mkdirSync, readFileSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {HttpError, object} from './errors.js';
-import {parse, stringify} from './precise-json.js';
+import {clone, parse, stringify} from './precise-json.js';
 import {storageDirectory, checkStoragePaths} from './storage-paths.js';
 
 const identity = (index, type, id) => JSON.stringify([index, type, id]);
+export const defaultLimits = Object.freeze({indexDocuments: 10000, storeDocuments: 25000, indexBytes: 64 * 1024 * 1024, storeBytes: 128 * 1024 * 1024, indices: 128});
 
 /** One process owns a store. A completed write is visible and saved before acknowledgement. */
 export class Store {
-  constructor({dataDir, dataRoot, now = Date.now} = {}) {
+  constructor({dataDir, dataRoot, now = Date.now, limits = {}} = {}) {
     this.now = now;
+    this.limits = {...defaultLimits, ...limits};
+    for (const [name, value] of Object.entries(this.limits)) if (!(name in defaultLimits) || !Number.isSafeInteger(value) || value < 1 || value > defaultLimits[name]) throw new Error('Store limits must be positive integers no greater than the defaults');
+    this.encoded = new WeakMap();
     this.dataDir = storageDirectory(dataDir === ':memory:' ? undefined : dataDir, dataRoot);
     this.docs = new Map();
     this.indices = new Map();
@@ -18,7 +22,10 @@ export class Store {
     checkStoragePaths(this.dataDir);
     this.file = join(this.dataDir, 'store.json');
     let state;
-    try { state = parse(readFileSync(this.file, 'utf8')); }
+    try {
+      if (statSync(this.file).size > this.limits.storeBytes) throw new Error('Stored data exceeds the store byte quota');
+      state = parse(readFileSync(this.file, 'utf8'));
+    }
     catch (error) { if (error.code === 'ENOENT') return; throw new Error('Cannot load LDA Local Find data; repair or move the store before starting', {cause: error}); }
     if (state?.version !== 1 || !Array.isArray(state.docs) || !Array.isArray(state.indices)) throw new Error('Invalid LDA Local Find store format');
     for (const [index, settings] of state.indices) {
@@ -35,6 +42,42 @@ export class Store {
       if (this.docs.has(key)) throw new Error('Duplicate stored identity');
       this.docs.set(key, doc);
     }
+    this.checkCapacity();
+  }
+
+  // Cache immutable document records: subsequent saves never serialize unchanged sources.
+  encode(doc) {
+    let encoded = this.encoded.get(doc);
+    if (!encoded) {
+      const text = stringify(doc);
+      encoded = {text, bytes: Buffer.byteLength(text)};
+      this.encoded.set(doc, encoded);
+    }
+    return encoded;
+  }
+
+  checkCapacity(candidate, candidateSettings) {
+    const indices = new Map(this.indices);
+    if (candidate) indices.set(candidate.index, candidateSettings ?? this.settings(candidate.index));
+    const usage = new Map([...indices].map(([index, settings]) => [index, {count: 0, bytes: Buffer.byteLength(stringify([index, settings])) + 1}]));
+    const replacement = candidate && identity(candidate.index, candidate.type, candidate.id);
+    let count = 0; let bytes = 39; // Snapshot framing, including both arrays.
+    const add = doc => {
+      if (!usage.has(doc.index)) usage.set(doc.index, {count: 0, bytes: 0});
+      const item = usage.get(doc.index);
+      item.count++; item.bytes += this.encode(doc).bytes + 1; count++;
+    };
+    const now = this.now();
+    for (const [key, doc] of this.docs) if (key !== replacement && this.live(doc, now)) add(doc);
+    if (candidate) add(candidate);
+    if (usage.size > this.limits.indices) throw new HttpError(413, 'Store index quota exceeded');
+    for (const item of usage.values()) {
+      if (item.count > this.limits.indexDocuments) throw new HttpError(413, 'Index document quota exceeded');
+      if (item.bytes > this.limits.indexBytes) throw new HttpError(413, 'Index byte quota exceeded');
+      bytes += item.bytes;
+    }
+    if (count > this.limits.storeDocuments) throw new HttpError(413, 'Store document quota exceeded');
+    if (bytes > this.limits.storeBytes) throw new HttpError(413, 'Store byte quota exceeded');
   }
 
   validateIdentity(index, type, id) {
@@ -55,6 +98,7 @@ export class Store {
       const now = this.now();
       for (const [key, doc] of this.docs) if (!this.live(doc, now)) this.docs.delete(key);
       const result = operation();
+      this.checkCapacity();
       if (this.file) {
         checkStoragePaths(this.dataDir);
         if (mkdirSync(this.dataDir, {recursive: true})) checkStoragePaths(this.dataDir);
@@ -63,7 +107,14 @@ export class Store {
         const fd = openSync(temporary, 'wx', 0o600);
         let renamed = false;
         try {
-          try { writeFileSync(fd, stringify({version: 1, docs: [...this.docs.values()], indices: [...this.indices]}), 'utf8'); }
+          try {
+            writeFileSync(fd, '{"version":1,"docs":[', 'utf8');
+            let separator = '';
+            for (const doc of this.docs.values()) {
+              writeFileSync(fd, separator + this.encode(doc).text, 'utf8'); separator = ',';
+            }
+            writeFileSync(fd, '],"indices":' + stringify([...this.indices]) + '}', 'utf8');
+          }
           finally { closeSync(fd); }
           checkStoragePaths(this.dataDir);
           renameSync(temporary, this.file);
@@ -75,7 +126,10 @@ export class Store {
   }
 
   ensureIndex(index) {
-    if (!this.indices.has(index)) this.indices.set(index, {refresh: true, languages: []});
+    if (!this.indices.has(index)) {
+      if (this.indices.size >= this.limits.indices) throw new HttpError(413, 'Store index quota exceeded');
+      this.indices.set(index, {refresh: true, languages: []});
+    }
     return this.indices.get(index);
   }
 
@@ -93,9 +147,12 @@ export class Store {
     const expiresAt = ttl === undefined ? undefined : this.now() + ttl;
     if (expiresAt !== undefined && !Number.isSafeInteger(expiresAt)) throw new HttpError(400, 'TTL deadline exceeds the local time range');
     parent ??= previous?.parent;
-    this.docs.set(identity(index, type, id), {index, type, id, version, source: structuredClone(source), ...(expiresAt !== undefined ? {expiresAt} : {}), ...(parent !== undefined ? {parent} : {})});
-    const settings = this.ensureIndex(index);
+    const document = {index, type, id, version, source: clone(source), ...(expiresAt !== undefined ? {expiresAt} : {}), ...(parent !== undefined ? {parent} : {})};
+    const settings = structuredClone(this.settings(index));
     if (language && !settings.languages.includes(language)) settings.languages.push(language);
+    this.checkCapacity(document, settings);
+    this.indices.set(index, settings);
+    this.docs.set(identity(index, type, id), document);
     return {ok: true, _index: index, _type: type, _id: id, _version: version};
   }
 

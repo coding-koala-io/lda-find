@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict';
 import {createServer} from '../src/server.js';
+import {mkdtempSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, resolve, dirname, sep} from 'node:path';
 
 export const PREFIX = '/tenant/synthetic-development-key';
 export const quiet = {error() {}};
+
+export function testStorage(t) {
+  const dataDir = mkdtempSync(join(tmpdir(), 'lda-find-test-'));
+  t.after(() => {
+    const target = resolve(dataDir);
+    if (!target.startsWith(resolve(tmpdir()) + sep) || dirname(target) !== resolve(tmpdir())) throw new Error('Test cleanup escaped temporary storage');
+    rmSync(target, {recursive: true, force: true});
+  });
+  return {dataDir, dataRoot: dataDir};
+}
 
 export async function gateway(t, options = {}) {
   const server = createServer({port: 0, host: '127.0.0.1', servicePrefix: `${PREFIX}/`, dataDir: ':memory:', logger: quiet, ...options});

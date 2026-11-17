@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdirSync, mkdtempSync, readFileSync, rmSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync} from 'node:fs';
 import {join, resolve, sep} from 'node:path';
 import {gateway, ids} from './helpers.js';
 import {parse, stringify} from '../src/precise-json.js';
@@ -13,6 +13,7 @@ function temporary(t) {
     const target = resolve(directory);
     if (!target.startsWith(root + sep)) throw new Error('Test cleanup escaped its directory');
     rmSync(target, {recursive: true, force: true});
+    try { rmdirSync(root); } catch (error) { if (!['ENOTEMPTY', 'ENOENT', 'EEXIST'].includes(error.code)) throw error; }
   });
   return directory;
 }
@@ -62,13 +63,13 @@ test('signed integral limits, array sort aggregates, facets and projections pres
   for (const mode of ['min', 'max', 'sum', 'avg']) assert.deepEqual(ids(await search({sort: [{'Value$$long': {mode}}]})), ['low', 'high']);
   const facets = parse((await request('/pages/_search', {method: 'POST', body: {facets: {values: {terms: {field: 'Value$$long'}}}}})).text).facets.values;
   assert.deepEqual(facets.terms, [{term: 9007199254740993n, count: 2}, {term: 9007199254740992n, count: 1}, {term: 9007199254740994n, count: 1}]);
-  for (const body of [{fields: ['Nested.Min$$long', 'Nested.Max$$long']}, {partial_fields: {p: {include: ['Nested.*']}}}]) {
+  for (const [body, prefix] of [[{fields: ['Nested.Min$$long', 'Nested.Max$$long']}, 'Nested.'], [{partial_fields: {p: {include: ['Nested.*']}}}, '']]) {
     const result = await request('/pages/_search', {method: 'POST', body});
-    assert.ok(result.text.includes('"Min$$long":-9223372036854775808'));
-    assert.ok(result.text.includes('"Max$$long":9223372036854775807'));
+    assert.ok(result.text.includes(`"${prefix}Min$$long":-9223372036854775808`));
+    assert.ok(result.text.includes(`"${prefix}Max$$long":9223372036854775807`));
   }
   const projected = await request('/pages/Synthetic_ArticlePage/high?fields=Nested.Min$$long');
-  assert.ok(projected.text.includes('"Min$$long":-9223372036854775808'));
+  assert.ok(projected.text.includes('"Nested.Min$$long":-9223372036854775808'));
   assert.deepEqual(ids(await search('{"query":{"term":{"Nested.Max$$long":9223372036854775806}}}')), []);
 });
 
@@ -103,4 +104,22 @@ test('precise numeric token parsing handles integral decimal/exponent forms and 
   assert.deepEqual(parse(source), JSON.parse(source));
   assert.equal({}.x, undefined);
   for (const malformed of ['01', '1.', '[1,]', '{"a":1} trailing']) assert.throws(() => parse(malformed), SyntaxError);
+});
+
+test('mixed integral and decimal number tokens survive persistence, restart and array projections', async t => {
+  const dataDir = temporary(t);
+  const first = await gateway(t, {dataDir});
+  const source = '{"PageLink":{"ID$$number":271},"ContentLink":{"ID$$number":272},"Count$$number":4,"Price$$number":12.5,"WholePrice$$number":2.0,"Rows":[{"Weight$$number":3.0},{"Weight$$number":4}],"Values$$number":[1,2.0,2.5]}';
+  await first.put('one', source);
+  assert.ok(readFileSync(join(dataDir, 'store.json'), 'utf8').includes(source));
+  const {request} = await gateway(t, {dataDir});
+  const fetched = await request('/pages/Synthetic_ArticlePage/one');
+  assert.ok(fetched.text.includes(source), fetched.text);
+  const projected = await request('/pages/_search', {method: 'POST', body: {fields: ['PageLink.ID$$number', 'ContentLink.ID$$number', 'Count$$number', 'Price$$number', 'WholePrice$$number', 'Rows.Weight$$number', 'Values$$number']}});
+  for (const token of ['"PageLink.ID$$number":271,', '"ContentLink.ID$$number":272,', '"Count$$number":4,', '"Price$$number":12.5,', '"WholePrice$$number":2.0,', '"Rows.Weight$$number":[3.0,4]', '"Values$$number":[1,2.0,2.5]']) {
+    assert.ok(projected.text.includes(token), `${token}: ${projected.text}`);
+  }
+  const partial = await request('/pages/_search', {method: 'POST', body: {partial_fields: {selected: {include: ['Rows.*', 'Values$$number', 'WholePrice$$number']}}}});
+  assert.ok(partial.text.includes('"Rows":[{"Weight$$number":3.0},{"Weight$$number":4}]'), partial.text);
+  assert.ok(partial.text.includes('"Values$$number":[1,2.0,2.5]'), partial.text);
 });

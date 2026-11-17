@@ -14,14 +14,87 @@ function numberToken(token, approximate) {
   return integer >= BigInt(Number.MIN_SAFE_INTEGER) && integer <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(integer) : integer;
 }
 
+// $$number is shared by CLR integral and floating-point properties. Preserve
+// the indexed token's type on its containing object, without boxing numbers or
+// changing query arithmetic. Weak metadata never becomes a document property.
+const decimalTokens = new WeakMap();
+export function numericTokenAt(holder, key) {
+  const entry = decimalTokens.get(holder)?.get(String(key));
+  return entry && Object.is(entry.value, holder[key]) ? entry.token : undefined;
+}
+
+export function copyNumericToken(source, key, target, targetKey = key) {
+  const token = numericTokenAt(source, key);
+  if (token === undefined) return;
+  if (!decimalTokens.has(target)) decimalTokens.set(target, new Map());
+  decimalTokens.get(target).set(String(targetKey), {value: target[targetKey], token});
+}
+
 export function parse(text) {
-  return JSON.parse(text, (key, value, context) => typeof value === 'number' ? numberToken(context.source, value) : value);
+  return JSON.parse(text, function (key, value, context) {
+    if (typeof value !== 'number') return value;
+    const parsed = numberToken(context.source, value);
+    if (/[.eE]/.test(context.source)) {
+      if (!decimalTokens.has(this)) decimalTokens.set(this, new Map());
+      decimalTokens.get(this).set(key, {value: parsed, token: context.source});
+    }
+    return parsed;
+  });
+}
+
+/** Clone document data while retaining indexed numeric token types. */
+export function clone(value) {
+  const result = structuredClone(value);
+  function transfer(source, target) {
+    if (!source || typeof source !== 'object') return;
+    for (const key of Object.keys(source)) {
+      copyNumericToken(source, key, target);
+      transfer(source[key], target[key]);
+    }
+  }
+  transfer(value, result);
+  return result;
+}
+
+/** Array selection must carry token types along with the primitive values. */
+export function appendNumeric(target, source, key) {
+  const index = target.length;
+  target.push(source[key]);
+  copyNumericToken(source, key, target, index);
+}
+
+export function flattenNumeric(values, depth = Infinity) {
+  const result = [];
+  function visit(array, remaining) {
+    for (let i = 0; i < array.length; i++) {
+      if (remaining > 0 && Array.isArray(array[i])) visit(array[i], remaining - 1);
+      else appendNumeric(result, array, i);
+    }
+  }
+  visit(values, depth);
+  return result;
 }
 
 /** BigInt is emitted as a JSON numeric token, never a string or marker object. */
 export function stringify(value) {
-  return JSON.stringify(value, (key, item) => typeof item === 'bigint' ? JSON.rawJSON(item.toString()) : item);
+  return JSON.stringify(value, function (key, item) {
+    const token = numericTokenAt(this, key);
+    if (token !== undefined) return JSON.rawJSON(token);
+    return typeof item === 'bigint' ? JSON.rawJSON(item.toString()) : item;
+  });
 }
+
+/** Preserve a floating-point wire type even when the value is whole. Keep the
+ * decimal point in the mantissa for exponent notation as well. */
+export function decimal(value) {
+  if (!isNumeric(value) || typeof value === 'number' && !Number.isFinite(value)) return value;
+  const [mantissa, exponent] = String(value).split('e');
+  return JSON.rawJSON(`${mantissa.includes('.') ? mantissa : `${mantissa}.0`}${exponent === undefined ? '' : `e${exponent}`}`);
+}
+
+/** Document numbers retain their indexed token types. Computed floating-point
+ * values (scores) are explicitly marked with decimal() at their origin. */
+export const stringifyResponse = stringify;
 
 export const isNumeric = value => typeof value === 'number' || typeof value === 'bigint';
 export const comparable = (a, b) => typeof a === typeof b || isNumeric(a) && isNumeric(b);

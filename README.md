@@ -1,16 +1,37 @@
+> **Development and research use only. Not designed or tested for production use.**
+> LDA Local Find runs on one developer machine, bound to localhost. Behaviour,
+> limits and relevance differ from the hosted service; test against the real service
+> before release. Local data can include drafts and restricted content: keep it private.
+> No telemetry. Provided "as is", without warranty. See [LEGAL-NOTICE.md](LEGAL-NOTICE.md).
+> This independent project is not affiliated with, sponsored by or endorsed by Optimizely.
+
 # LDA Local Find
 
-A local development service compatible with Optimizely Search & Navigation (Find).
+**A free, local-only development stand-in compatible with Optimizely Search & Navigation (Find) for CMS 12.** Run your site's own indexing job, then search its content on your own machine.
 
-LDA Local Find is an independent project, not affiliated with, sponsored by, or endorsed by Optimizely. Users need their own Optimizely licence for the CMS and client software they use.
+Part of **Local Developer Accelerator by Coding Koala**. Users need their own Optimizely licence for the CMS and client software they use. This project grants no rights to Optimizely software or services. Product names identify compatibility only; they are trademarks of their respective owners.
 
-Development and research use only. The service binds exclusively to `127.0.0.1`, stores content on your machine, and sends no telemetry. It implements a small protocol profile; running CMS 12 compatibility and hosted search relevance have not been verified. See [LEGAL-NOTICE.md](LEGAL-NOTICE.md) and [CLEAN-ROOM.md](CLEAN-ROOM.md).
+## 2-minute quick start
 
-## Start from source
+Requires Node.js 24 or later and an existing, licensed CMS 12 site configured to use Search & Navigation. The setup takes about two minutes; indexing time depends on your content.
 
-1. Install Node.js 24 or later. This project has no runtime or development dependencies.
-2. Run `npm start` in this folder. The default address is `http://127.0.0.1:8088`.
-3. Put the following synthetic development settings in your CMS 12 site's `appsettings.Development.json`:
+1. Install and start this server from this folder:
+
+   ```powershell
+   npm install
+   npm start
+   ```
+
+   There are no runtime or development dependencies. Keep this terminal running; the default address is `http://127.0.0.1:8088`.
+
+2. In the terminal that starts your CMS site, set these two development settings, then start the site with its usual command:
+
+   ```powershell
+   $env:EPiServer__Find__ServiceUrl = 'http://127.0.0.1:8088/local-development-key/'
+   $env:EPiServer__Find__DefaultIndex = 'local-pages'
+   ```
+
+   Alternatively, put the same settings in the site's `appsettings.Development.json`:
 
    ```json
    {
@@ -23,43 +44,92 @@ Development and research use only. The service binds exclusively to `127.0.0.1`,
    }
    ```
 
-4. Start the CMS after the service. Exercise its startup, indexing and search flow against synthetic content before relying on the result.
+3. In the CMS administration UI, run **the site's own built-in Search & Navigation indexing scheduled job**. Use the site's search page after it finishes. On the Foundation sample, the search term parameter is `?search=jacket`.
 
-The service URL includes the complete path prefix and synthetic key. The index is a separate setting. Keep any tenant path before the key in `SERVICE_PREFIX`; routing requires that complete prefix. There is no separate Authorization header or credential exchange. Use synthetic local values, never a hosted service credential. The startup message deliberately omits the prefix.
+The URL path contains a synthetic local key, not a hosted credential. Keep the trailing slash and set the index separately. Start this server before the CMS. On Windows, use `npm.cmd` if the PowerShell npm wrapper does not run its script.
 
-On Windows, use `npm.cmd start` or `npm.cmd test` if a PowerShell npm wrapper exits without running the script.
+The `lda install find` registration belongs to the separate LDA CLI repository. It is not available in the inspected CLI yet; [the exact installer handoff](docs/lda-install-find.md) records the changes and release prerequisites. Use the source start above for this build.
+
+## Proven on CMS 12 Foundation
+
+The project owner completed the real-site proof on 17 November 2026 using Foundation's own built-in indexing job and search page:
+
+| Check | Result |
+| --- | --- |
+| Built-in indexing job | **811 items reported by the job; 809 documents stored** in the subsequent admin-screen run. |
+| `?search=jacket` | **6 products** displayed. |
+| `?search=shoes` | **8 products** displayed. |
+| A no-match word | **"No products matched"** displayed. |
+
+**Known Foundation sample limitation:** two items, `CartPage` and `LayoutSettings`, fail inside the sample's outgoing serialization before any request is sent to LDA Local Find. The job's 811-item total appears to include these two errors; it is not a count of successful server acknowledgements.
+
+This proof establishes that indexing and these search-page scenarios work on that CMS 12 sample. It does not establish compatibility with every site feature or parity with hosted search relevance.
+
+## What it supports
+
+| Area | Local behaviour |
+| --- | --- |
+| Connection | Settings, real-language list reads/clear and feature discovery with unsupported capabilities disabled. CMS-forwarded HTTP/HTTPS loopback Origins are accepted at any port, including comma-separated repetitions of the same origin. JSON bodies with proxy form/plain content types are accepted on search/count and document routes. |
+| Indexing | Single and ordered bulk index/create/delete, bounded get/multi-get, query deletion, named-index clearing, refresh lifecycle acknowledgements, version preconditions, TTL expiry and parent metadata. |
+| Search | Search/count and newline-framed multi-search; Overview type/language/site counts, Explore match-all (`*:*`), type filters and paging; full text, Boolean/type/language/access/publication predicates, field variants, existence, prefix and numeric/date ranges. Empty predicate objects match all. |
+| Results | Term/filter facets, separate query and hit filters, sorting, paging, source/field/partial projections, basic highlights, boosts and native `ascropped` excerpt projections. CMS reference IDs and indexed integer/decimal token types are preserved. |
+| Storage | Local memory evaluation with JSON persistence. Writes are visible immediately and persisted before acknowledgement. `:memory:` disables persistence. |
+
+See [docs/compatibility.md](docs/compatibility.md) for endpoint coverage and exact implementation choices.
+
+## What it does not support
+
+- **Full service coverage.** Unimplemented endpoints/methods, including field updates, service queuing and most administration, return HTTP **501** with a short JSON reason, including when URL options are present. Implemented endpoints still reject malformed input or unsupported options with 400 (unsupported scroll uses 501).
+- **Hosted search behaviour.** No stemming, hosted analyzer/ranking parity, synonym or best-bet management, arbitrary script execution/scoring, advanced facet families, geo sorting, child joins or attachment extraction. The named `ascropped` projection is a local character crop. Refresh switches acknowledge the lifecycle without delaying write visibility.
+- **Statistics or analytics.** Did-you-mean, spellcheck and autocomplete return empty `hits`. Query/hit tracking returns fixed dummy acknowledgements, retains no events and never records tracking bodies. Clear statistics succeeds as a no-op. Totals, GDPR and sanitizer management are unsupported. Nothing is sent anywhere by these endpoints.
+- **Remote or production operation.** The server binds only to `127.0.0.1`, validates local Host headers, and accepts Origin only for `http`/`https` on `localhost`, `127.0.0.1` or `[::1]` at any port. Comma-separated Origin lists pass only when every trimmed entry is the same allowed origin; mixed origins, empty entries and non-loopback entries receive 403. It has no telemetry or outbound service integration, distributed indexing or production guarantees.
 
 ## Configuration
 
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `8088` | Integer TCP port; `0` requests an available port. |
-| `HOST` | `127.0.0.1` | This is the only accepted bind address. Other values prevent startup. |
-| `SERVICE_PREFIX` | `/local-development-key` | Complete tenant/key path. A trailing slash is optional. Use a synthetic development key. |
-| `DATA_DIR` | Approved root | Local JSON storage folder inside the approved root. Relative paths resolve from the install folder; `..` path components are refused. `:memory:` disables persistence. |
-| `DATA_ROOT` | `./data` under the install folder | Explicitly approves a different absolute storage root. Values containing `..` anywhere are refused. |
+| `HOST` | `127.0.0.1` | Only accepted bind address. Other values prevent startup. |
+| `SERVICE_PREFIX` | `/local-development-key` | Complete tenant/key path. Match it in the site's service URL; use synthetic values. |
+| `DATA_ROOT` | `./data` beside this README | Approved storage root. Set an absolute path to approve external storage. |
+| `DATA_DIR` | Approved root | Storage folder within that root. Relative paths resolve from the install folder. `:memory:` disables persistence. |
+| `DEBUG_SEARCH_REQUESTS` | Off | Set to `1` before starting to enable the local recording described below. |
+| `LOG_REQUESTS` | On in development; off when `NODE_ENV=production` | `0` disables request logging; `1` enables it. One console line per request: method, redacted path, status, a short error code for 4xx/5xx, and elapsed milliseconds. |
 
-One process serves one prefix and any number of named indices. Run a separate process, port and data directory for another instance. Only one process may own a data directory.
+One process serves one prefix and any number of named indices. Use a separate process, port and data directory for another instance. Only one process may own a data directory. The startup message omits the service prefix.
 
-Storage defaults to `data` beside this README regardless of the process working directory. For separate instances use `DATA_DIR=./data/instance-a`. To approve external storage, set `DATA_ROOT` to its absolute path; omit `DATA_DIR` to use that root directly, or set `DATA_DIR` to an absolute child path. Paths outside the approved root prevent startup. Symlinks, junctions and Windows reparse points are refused on storage folders, ancestors and store/staging files. Writes create `store.json.tmp` exclusively before replacing `store.json`; an existing staging file is refused. Windows also requires the built-in `powershell.exe` for reparse-attribute checks and refuses storage if that check fails. Keep the storage root under the service owner's control; portable path checks cannot prevent another process racing to replace a directory during a write.
+Storage paths containing `..`, paths outside the approved root, symlinks, junctions and Windows reparse points are refused. Writes create `store.json.tmp` exclusively before replacing `store.json`; an existing staging file prevents a write. Windows requires built-in `powershell.exe` for reparse checks. Keep the root under the service owner's control; another process changing directories during a write remains outside portable path-check guarantees.
 
-Integral JSON values beyond JavaScript's safe integer range are kept exactly through persistence, predicates, sorting, facets and responses. Responses emit numeric tokens, so consumers must also use a precision-preserving JSON reader. Floating-point values retain JavaScript number semantics. Values already rounded by an earlier build must be reindexed from their original source; the lost digits cannot be recovered from the store.
+Integral JSON values beyond JavaScript's safe integer range remain exact through persistence, predicates, sorting, facets and responses. Consumers need a precision-preserving reader too. Indexed decimal tokens retain their decimal syntax; scores use decimal tokens. Reindex values already rounded or stripped of decimal syntax by earlier builds from their original source.
 
-## Implemented profile
+Every terms facet includes `total` (the sum of all term counts within the query and facet-filter scope, including terms omitted by `size`) and `other` (`total` minus the sum of returned term counts). Missing documents are counted separately in `missing`. Multi-valued documents can contribute to several term counts; `other` is zero when all terms are returned.
 
-| Area | Behavior |
-| --- | --- |
-| Connection | Settings, disabled feature discovery, language-list reads/clear. Statistics, administration and service queuing are not advertised. |
-| Documents | Single writes with explicit or generated IDs, get, delete, ordered bulk index/create/delete, multi-get, query deletion, refresh switches, version preconditions, TTL expiry and parent metadata. Identity includes index, transport type and ID. |
-| Search | Typed/index-list search and count, newline-framed multi-search, full text, grouped Boolean filters, type hierarchy, field variants, existence, prefix and numeric/date ranges. |
-| Results | Term/filter facets, separate query and hit-filter populations, field sorting, paging, source/projections, simple highlight fragments and numeric boosts. |
-| Storage | In-memory evaluation with atomic JSON file replacement before acknowledging a write. Submitted source values are retained. |
+Document GET uses the same **16 MiB output construction budget** as search, covering metadata, full source and every explicit field selection. Overlapping or repeated fields consume capacity separately; overflow returns **413** before later projections are constructed.
 
-Writes are visible immediately, including while refresh is off. Refresh switches record state and acknowledge the reindex lifecycle; they do not hide writes. Query deletion always evaluates the supplied predicate, including with `delta_indexing=true`; it does not clear unrelated records.
+Local quotas are **10,000 documents / 64 MiB per index**, **25,000 documents / 128 MiB per store**, and **128 indices**. Byte accounting includes UTF-8 document records, identities and index settings. Exceeding a quota returns **413** (a per-item 413 for bulk); replacements and expired/deleted content release capacity. Startup refuses stores over these limits. Settings advertise the index document limit. Snapshots reuse cached serialization of unchanged documents, stream to an atomic replacement file, and batch a bulk request into one bounded save before acknowledgement. A save still copies the bounded snapshot to disk.
 
-Single `version` and bulk `_version` require an existing live document with the same version; mismatches return 409. TTL is positive integer milliseconds and hides expired records from reads/searches; replacing without TTL removes the old expiry. Parent metadata is retained and available through `_parent`; child joins remain unsupported. Consistency/replication/timeout/routing controls are validated single-node hints. Percolation is rejected explicitly because its result behavior is unspecified. See the compatibility report for exact local choices.
+Search enforces one **16 MiB output construction budget** across hit metadata, source/field/partial projections, crop fields, highlights and facets. Each alias, copy and repeated hit consumes capacity; overflow returns **413** while building the response. Accounting conservatively reserves envelope/punctuation bytes and counts overwritten selections, so a near-limit response can be refused below 16 MiB of final JSON. Multi-search allows at most **100 searches** and shares that **16 MiB aggregate output budget** across all components, returning 413 on overflow. Multi-get allows at most **100 documents** and **16 MiB of response JSON**, counting repeated documents each time; overflow returns 413. Text expressions allow **64 KiB**, nesting up to **40** including surrounding DSL nodes, and a shared **1,024-node/term/field-predicate** compile budget across query, hit filter and facet predicates. Every compiled compound field predicate counts, as does each term-list value. Wildcard patterns allow **1,024 UTF-16 code units** and **64 wildcard operators**; a finite-state matcher avoids backtracking regular expressions. Excesses return 400 before scanning. Search URL `size` (0–1,000) and `from` (nonnegative safe integer) override body paging; `search_type` is validated. Unknown, duplicate, empty or invalid URL options on implemented endpoints return 400, including empty write `routing=` and `language_routing=`; `scroll` returns 501.
 
-Search uses Unicode word tokens and lowercase comparison, without stemming. Base string terms remain exact and case-sensitive; `.lowercase`, `.standard`, language, wildcard-language and `.sort` views are evaluated separately. Language analyzer names select the same local token matcher. Language routing is recorded as a language choice and never substitutes for the query's language filter. This is an approximation of analysis and ranking.
+`POST` or `DELETE /I/_clear?clear_index=true&clear_stats=false` empties only the named Local Find index and its language metadata; it preserves other indices. Both flags must be Boolean strings. With `clear_index=false&clear_stats=true`, the operation succeeds without writing because no statistics are retained. Explore accepts scalar or array partial-source patterns and omits attachments as requested. Search/count, single-document and multi-get routes also accept `application/x-www-form-urlencoded` or `text/plain` (including charset parameters) only when the body parses as exactly one JSON value; malformed/empty JSON or invalid endpoint shapes return 400. No form decoding is performed. Bulk, multi-search and Statistics retain their existing JSON/NDJSON content-type requirements.
+
+Request logs omit the service prefix, query string, headers and bodies. Dynamic path segments are replaced with `:value`; for example `POST /:value/_search 200 12ms` or `POST /:value/_search 400 invalid_json 12ms`. Error codes are fixed internal identifiers, never error messages or user values. This log is separate from opt-in search-body recording below.
+
+## Opt-in search request recording
+
+Recording is **off by default**. To enable it for a local debugging session:
+
+```powershell
+$env:DEBUG_SEARCH_REQUESTS = '1'
+npm start
+```
+
+Only successfully validated search and multi-search bodies are appended to `DATA_DIR/search-requests.ndjson`, up to **10 MiB**. Rejected requests and partially invalid multi-search batches are never recorded. URLs, headers, multi-search metadata, indexing payloads and Statistics requests are omitted. Credential-named properties (including `key`, `servicePrefix` and `service_prefix`), key-like tokens in values and property names, and the configured service prefix and its segments (including inside query text) are redacted recursively. Long opaque words can be over-redacted.
+
+Search terms and other body values can still contain private information: redaction is not a guarantee that arbitrary text contains no secrets. Keep recordings private and outside release artifacts. Remove the environment setting and restart to disable recording:
+
+```powershell
+Remove-Item Env:DEBUG_SEARCH_REQUESTS -ErrorAction SilentlyContinue
+```
 
 ## Tests
 
@@ -67,16 +137,12 @@ Search uses Unicode word tokens and lowercase comparison, without stemming. Base
 npm test
 ```
 
-Tests use `node:test`, synthetic documents and temporary loopback ports. They cover each implemented essential endpoint's request/response shape, item failures, malformed requests, prefix enforcement and persistence. One end-to-end test indexes 20 pages of two types and verifies filtering, facets, paging and projection. Another tests 30 CMS records across publication, language, status and type-guard branches, returning only the nine eligible records for its authenticated visitor. Write-option tests exercise conflicts, expiry boundaries, restart and rollback.
+Tests use Node's built-in test runner, original synthetic fixtures, temporary local storage and loopback ports. They cover protocol contracts, indexing, visitor visibility, search/projections, exact numeric responses, persistence, storage boundaries, Statistics no-ops and opt-in diagnostics. The real Foundation proof above is separate owner-supplied acceptance evidence.
 
-## Remaining work
+Run `npm run check:clean-room` before publication. It inspects ignored files too and fails on binaries, SDK probes, diagnostic folders or request/replay captures anywhere outside Git's internal database. The local proof store remains private and excluded from publication. Test recordings use OS temporary storage and are cleaned up.
 
-Enabled extensions, script updates/scoring, mapping/exploration APIs, best bets, synonyms, suggestions and tracking remain outside this build. Attachments are retained without extraction. Unsupported operations and query features return explicit errors. No live CMS site or vendor client was executed for this build.
+## Files and licence
 
-The complete endpoint coverage, unsupported query features and spec decisions are in [docs/compatibility.md](docs/compatibility.md). Read that report before enabling additional site features.
+`src/` contains the HTTP service, protocol routes, store and evaluator. `test/` contains original synthetic tests. `docs/` contains compatibility, installer handoff and release-check records. Runtime content, diagnostic captures and SDK probes are excluded from release files; see the [release check](docs/release-check.md) for the whole-folder audit boundary.
 
-## Repository layout
-
-`src/` holds the HTTP service, protocol routes, store and evaluator. `test/` holds synthetic fixtures and built-in Node tests. `docs/` holds the implementation coverage report. `data/store.json` is generated at runtime and ignored by Git. No dashboard, service installer or release packaging is included in part 1.
-
-See [LICENSE.md](LICENSE.md) and [NOTICE](NOTICE) for the software licence.
+Free to use, change and share under Apache License 2.0. The complete licence text, including its application appendix, is in [LICENSE.md](LICENSE.md). See [NOTICE](NOTICE), [LEGAL-NOTICE.md](LEGAL-NOTICE.md) and the [clean-room record](CLEAN-ROOM.md). Published by Coding Koalas Pty Ltd. Legal: legal@codingkoala.io.

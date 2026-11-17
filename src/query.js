@@ -1,9 +1,15 @@
 import {HttpError, object, keys, unsupported} from './errors.js';
 import {fieldValues, words} from './fields.js';
 import {comparable, equal} from './precise-json.js';
+import {wildcard} from './wildcard.js';
 
 const list = value => value == null ? [] : Array.isArray(value) ? value : [value];
 const matched = score => score !== null;
+export const queryLimits = Object.freeze({depth: 40, terms: 1024, textBytes: 64 * 1024});
+function consume(budget, count = 1) {
+  budget.terms += count;
+  if (budget.terms > queryLimits.terms) throw new HttpError(400, 'Query has too many terms');
+}
 const numeric = (value, label) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new HttpError(400, `${label} must be a finite number`);
   return value;
@@ -34,9 +40,11 @@ function fieldEntries(options, allowed = []) {
 }
 
 function tokenize(text) {
+  if (Buffer.byteLength(text) > queryLimits.textBytes) throw new HttpError(400, 'Text expression is too large');
   const tokens = []; let token = ''; let quoted = false;
   function flush() { if (token) { tokens.push(token); token = ''; } }
   for (let i = 0; i < text.length; i++) {
+    if (tokens.length > queryLimits.terms * 3 + queryLimits.depth * 2) throw new HttpError(400, 'Text expression has too many tokens');
     const char = text[i];
     if (char === '\\' && i + 1 < text.length) { token += char + text[++i]; continue; }
     if (char === '"') { quoted = !quoted; token += char; continue; }
@@ -48,11 +56,10 @@ function tokenize(text) {
   flush(); return tokens;
 }
 
-const regexEscape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-function textQuery(options) {
+function textQuery(options, depth, budget) {
   keys(options, ['query', 'fields', 'default_field', 'analyzer', 'default_operator', 'boost', 'allow_leading_wildcard', 'lowercase_expanded_terms', 'enable_position_increments', 'analyze_wildcard', 'use_dis_max', 'tie_breaker', 'auto_generate_phrase_queries'], 'query_string');
   if (typeof options.query !== 'string') throw new HttpError(400, 'Text query must be a string');
+  if (Buffer.byteLength(options.query) > queryLimits.textBytes) throw new HttpError(400, 'Text expression is too large');
   if (options.analyzer != null && (typeof options.analyzer !== 'string' || /synonym/i.test(options.analyzer))) unsupported('text analyzer');
   const operator = options.default_operator ?? 'OR';
   if (!['AND', 'OR'].includes(operator)) throw new HttpError(400, 'Text operator must be AND or OR');
@@ -67,8 +74,9 @@ function textQuery(options) {
   const parsedFields = fields.map(parseField);
   const tokens = tokenize(options.query.trim() || '*'); let position = 0;
   function atom(token) {
+    consume(budget);
     if (!token || ['AND', 'OR', ')'].includes(token)) throw new HttpError(400, 'Invalid text expression');
-    if (token === '*') return () => 1;
+    if (token === '*' || token === '*:*') return () => 1;
     if (/(?<!\\)[~^\[\]{}]/.test(token)) unsupported('text expression');
     const colon = token.search(/(?<!\\):/);
     const selected = colon < 0 ? parsedFields : [parseField(token.slice(0, colon))];
@@ -79,7 +87,7 @@ function textQuery(options) {
     if (hasWildcard && /^[*?]/.test(term) && !options.allow_leading_wildcard) unsupported('leading wildcard');
     const plain = term.replace(/\\(.)/g, '$1').toLowerCase();
     const needle = words(plain).join(' ');
-    const pattern = hasWildcard ? new RegExp(`^${term.split(/((?<!\\)[*?])/).map(part => part === '*' ? '.*' : part === '?' ? '.' : regexEscape(part.replace(/\\(.)/g, '$1').toLowerCase())).join('')}$`, 'u') : null;
+    const pattern = hasWildcard ? wildcard(term, {escaped: true, lowercase: true}) : null;
     return doc => {
       let score = 0; let anyMatch = false;
       for (const {field, weight} of selected) {
@@ -87,18 +95,19 @@ function textQuery(options) {
         const values = fieldValues(doc, textField);
         const found = values.some(value => {
           const text = words(value);
-          return pattern ? text.some(word => pattern.test(word)) : phrase ? (` ${text.join(' ')} `).includes(` ${needle} `) : needle.length > 0 && text.includes(needle);
+          return pattern ? text.some(pattern) : phrase ? (` ${text.join(' ')} `).includes(` ${needle} `) : needle.length > 0 && text.includes(needle);
         });
         if (found) { score += weight; anyMatch = true; }
       }
       return anyMatch ? score : null;
     };
   }
-  function primary() {
+  function primary(nesting = depth) {
+    if (nesting > queryLimits.depth) throw new HttpError(400, 'Query nesting is too deep');
     const token = tokens[position++];
-    if (token === 'NOT') { const child = primary(); return doc => matched(child(doc)) ? null : 1; }
+    if (token === 'NOT') { const child = primary(nesting + 1); return doc => matched(child(doc)) ? null : 1; }
     if (token === '(') {
-      const expression = parseOr();
+      const expression = parseOr(nesting + 1);
       if (tokens[position++] !== ')') throw new HttpError(400, 'Unclosed text group');
       return expression;
     }
@@ -108,21 +117,21 @@ function textQuery(options) {
     const a = left(doc); const b = right(doc);
     return and ? matched(a) && matched(b) ? a + b : null : matched(a) || matched(b) ? (a ?? 0) + (b ?? 0) : null;
   };
-  function parseAnd() {
-    let left = primary();
+  function parseAnd(nesting) {
+    let left = primary(nesting);
     while (position < tokens.length && tokens[position] !== ')' && tokens[position] !== 'OR') {
-      if (tokens[position] === 'AND') { position++; left = combine(left, primary(), true); }
-      else if (tokens[position] === 'NOT') left = combine(left, primary(), true);
-      else if (operator === 'AND') left = combine(left, primary(), true);
+      if (tokens[position] === 'AND') { position++; left = combine(left, primary(nesting), true); }
+      else if (tokens[position] === 'NOT') left = combine(left, primary(nesting), true);
+      else if (operator === 'AND') left = combine(left, primary(nesting), true);
       else break;
     }
     return left;
   }
-  function parseOr() {
-    let left = parseAnd();
+  function parseOr(nesting = depth) {
+    let left = parseAnd(nesting);
     while (position < tokens.length && tokens[position] !== ')') {
       if (tokens[position] === 'OR') position++;
-      left = combine(left, parseAnd(), false);
+      left = combine(left, parseAnd(nesting), false);
     }
     return left;
   }
@@ -133,19 +142,21 @@ function textQuery(options) {
 }
 
 /** Compile before scanning so invalid/unsupported queries fail even on an empty index. */
-export function compile(node = {match_all: {}}, {now = Date.now(), depth = 0} = {}) {
-  if (depth > 40) throw new HttpError(400, 'Query nesting is too deep');
+export function compile(node = {match_all: {}}, {now = Date.now(), depth = 0, budget = {terms: 0}} = {}) {
+  if (depth > queryLimits.depth) throw new HttpError(400, 'Query nesting is too deep');
+  consume(budget);
   object(node, 'Query');
   const entries = Object.entries(node);
+  if (!entries.length) return () => 1;
   if (entries.length !== 1) throw new HttpError(400, 'A query node must have one operator');
   const [kind, options] = entries[0];
-  const child = value => compile(value, {now, depth: depth + 1});
+  const child = value => compile(value, {now, depth: depth + 1, budget});
   if (kind === 'match_all') { keys(options, ['boost'], kind); const boost = boostOf(options); return () => boost; }
-  if (kind === 'query_string') return textQuery(options);
+  if (kind === 'query_string') return textQuery(options, depth, budget);
   if (kind === 'field') {
     const fields = fieldEntries(options);
     if (fields.length !== 1) throw new HttpError(400, 'Field query requires one field');
-    return textQuery({...fields[0][1], fields: [fields[0][0]]});
+    return textQuery({...fields[0][1], fields: [fields[0][0]]}, depth, budget);
   }
   if (kind === 'and' || kind === 'or') {
     if (!Array.isArray(options)) throw new HttpError(400, `${kind} requires an array`);
@@ -187,6 +198,7 @@ export function compile(node = {match_all: {}}, {now = Date.now(), depth = 0} = 
   if (['term', 'terms', 'prefix', 'wildcard', 'range'].includes(kind)) {
     const fields = fieldEntries(options, kind === 'terms' ? ['minimum_match'] : []);
     const tests = fields.map(([field, input]) => {
+      consume(budget);
       if (kind === 'range') {
         keys(input, ['from', 'to', 'include_lower', 'include_upper', 'boost'], 'range');
         const from = input.from == null ? null : dateValue(input.from, now); const to = input.to == null ? null : dateValue(input.to, now);
@@ -198,6 +210,7 @@ export function compile(node = {match_all: {}}, {now = Date.now(), depth = 0} = 
       }
       if (kind === 'terms') {
         if (!Array.isArray(input)) throw new HttpError(400, 'Terms require an array');
+        consume(budget, input.length);
         const minimum = options.minimum_match ?? 1;
         if (!Number.isInteger(minimum) || minimum < 0) throw new HttpError(400, 'Terms minimum must be a nonnegative integer');
         return doc => new Set(fieldValues(doc, field).filter(value => input.some(term => equal(value, term)))).size >= minimum ? 1 : null;
@@ -206,8 +219,8 @@ export function compile(node = {match_all: {}}, {now = Date.now(), depth = 0} = 
       if (input && typeof input === 'object') { keys(input, ['value', 'boost'], kind); value = input.value; boost = boostOf(input); }
       if (!['string', 'number', 'bigint', 'boolean'].includes(typeof value)) throw new HttpError(400, 'Term value must be a scalar');
       if (kind !== 'term' && typeof value !== 'string') throw new HttpError(400, 'Prefix/wildcard value must be text');
-      const pattern = kind === 'wildcard' ? new RegExp(`^${value.split(/([*?])/).map(part => part === '*' ? '.*' : part === '?' ? '.' : regexEscape(part)).join('')}$`, 'u') : null;
-      return doc => fieldValues(doc, field).some(actual => kind === 'term' ? equal(actual, value) : typeof actual === 'string' && (pattern ? pattern.test(actual) : actual.startsWith(value))) ? boost : null;
+      const pattern = kind === 'wildcard' ? wildcard(value) : null;
+      return doc => fieldValues(doc, field).some(actual => kind === 'term' ? equal(actual, value) : typeof actual === 'string' && (pattern ? pattern(actual) : actual.startsWith(value))) ? boost : null;
     });
     return doc => {
       const scores = tests.map(fn => fn(doc));

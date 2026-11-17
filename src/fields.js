@@ -1,16 +1,25 @@
+import {appendNumeric, clone, copyNumericToken, flattenNumeric} from './precise-json.js';
+
 const own = (value, key) => value != null && typeof value === 'object' && Object.hasOwn(value, key);
 const metadataFields = new Set(['_id', '_type', '_index', '_version', '_parent']);
 export const words = value => String(value).toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
 
 /** Read exact submitted keys first, then dotted paths through objects and arrays. */
-function read(value, path) {
-  if (Array.isArray(value)) return value.flatMap(item => read(item, path));
+function read(value, path, preserveArrays = false) {
+  if (Array.isArray(value)) {
+    const selected = flattenNumeric(value.map(item => read(item, path, preserveArrays)), 1);
+    return preserveArrays && selected.length ? [flattenNumeric(selected, 1)] : selected;
+  }
   if (!path) return value === undefined ? [] : [value];
-  if (own(value, path)) return [value[path]];
+  if (own(value, path)) {
+    const selected = [];
+    appendNumeric(selected, value, path);
+    return selected;
+  }
   const split = path.indexOf('.');
   if (split < 0) return [];
   const head = path.slice(0, split);
-  return own(value, head) ? read(value[head], path.slice(split + 1)) : [];
+  return own(value, head) ? read(value[head], path.slice(split + 1), preserveArrays) : [];
 }
 
 export function fieldValues(doc, field) {
@@ -20,7 +29,9 @@ export function fieldValues(doc, field) {
   if (field === '_version') return [doc.version];
   if (field === '_parent') return doc.parent === undefined ? [] : [doc.parent];
   if (field === '_all') return strings(doc.source);
-  const exact = read(doc.source, field).flat(Infinity).filter(value => value != null);
+  const exact = [];
+  const flattened = flattenNumeric(read(doc.source, field));
+  for (let i = 0; i < flattened.length; i++) if (flattened[i] != null) appendNumeric(exact, flattened, i);
   if (exact.length) return exact;
   const match = field.match(/^(.*\$\$(?:string|strings))\.([^\.]+)$/);
   if (!match) return [];
@@ -36,42 +47,17 @@ export function strings(value) {
   return [];
 }
 
-export function assignPath(target, path, value) {
-  const [head, ...tail] = path.split('.');
-  if (!tail.length) { Object.defineProperty(target, head, {value: structuredClone(value), enumerable: true, writable: true, configurable: true}); return; }
-  if (!own(target, head) || !target[head] || typeof target[head] !== 'object') Object.defineProperty(target, head, {value: {}, enumerable: true, writable: true, configurable: true});
-  assignPath(target[head], tail.join('.'), value);
-}
-
-export function project(doc, fields) {
+/** Explicit field selections are keyed by the complete requested name. Scalar
+ * leaves stay scalar; source collections keep their array shape. */
+export function project(doc, fields, onField = () => {}) {
   const result = {};
-  const absent = Symbol('absent');
-  const set = (target, key, value) => Object.defineProperty(target, key, {value, enumerable: true, writable: true, configurable: true});
-  function pick(source, parts) {
-    if (Array.isArray(source)) return source.map(item => { const selected = pick(item, parts); return selected === absent ? {} : selected; });
-    if (!source || typeof source !== 'object') return absent;
-    const path = parts.join('.');
-    if (own(source, path)) { const selected = {}; assignPath(selected, path, source[path]); return selected; }
-    const [head, ...tail] = parts;
-    if (!own(source, head)) return absent;
-    const selected = tail.length ? pick(source[head], tail) : structuredClone(source[head]);
-    if (selected === absent) return absent;
-    const value = {}; set(value, head, selected); return value;
-  }
-  function merge(target, source) {
-    for (const [key, value] of Object.entries(source)) {
-      if (value && typeof value === 'object') {
-        if (!own(target, key) || !target[key] || typeof target[key] !== 'object' || Array.isArray(target[key]) !== Array.isArray(value)) set(target, key, Array.isArray(value) ? [] : {});
-        merge(target[key], value);
-      } else set(target, key, value);
-    }
-  }
   for (const field of fields) {
-    const selected = metadataFields.has(field) ? absent : pick(doc.source, field.split('.'));
-    if (selected !== absent) merge(result, selected);
-    else {
-      const values = fieldValues(doc, field);
-      if (values.length) assignPath(result, field, values.length === 1 ? values[0] : values);
+    const selected = metadataFields.has(field) ? [] : read(doc.source, field, true);
+    const values = selected.length ? selected : fieldValues(doc, field);
+    if (values.length) {
+      Object.defineProperty(result, field, {value: clone(values.length === 1 ? values[0] : flattenNumeric(values, 1)), enumerable: true, writable: true, configurable: true});
+      if (values.length === 1) copyNumericToken(values, 0, result, field);
+      onField(field, result[field], result);
     }
   }
   return result;

@@ -9,8 +9,8 @@ test('E14/E15/E17: settings, truthful feature gates, languages and preserved ser
   const {request, put} = await gateway(t);
   const settings = await request('/pages/_config');
   assert.equal(settings.status, 200);
-  assert.deepEqual(settings.data, {status: 'ok', item: {stats: false, admin: false, languages: ['en'], connectors: false, max_docs: null, version: '1.0'}});
-  assert.equal(settings.headers.get('has_documents_limit'), 'false');
+  assert.deepEqual(settings.data, {status: 'ok', item: {stats: false, admin: false, languages: ['en'], connectors: false, max_docs: 10000, version: '1.0'}});
+  assert.equal(settings.headers.get('has_documents_limit'), 'true');
   assert.equal(settings.headers.get('documents_used'), '0');
   assert.deepEqual((await request('/features')).data, {status: 'ok', features: []});
   assert.deepEqual((await request('/pages/specific-languages/get')).data, []);
@@ -32,7 +32,7 @@ test('E01/E02/E03: encoded identities, replacement, source fidelity, projection 
   let result = await request(path);
   assert.deepEqual(result.data, {_index: 'pages', _type: 'Synthetic_ArticlePage', _id: id, _version: 1, exists: true, _source: source});
   result = await request(`${path}?fields=ContentLink.ID$$long,Language.Name$$string,___types`);
-  assert.deepEqual(result.data.fields, {ContentLink: {'ID$$long': 1}, Language: {'Name$$string': 'en'}, ___types: source.___types});
+  assert.deepEqual(result.data.fields, {'ContentLink.ID$$long': 1, 'Language.Name$$string': 'en', ___types: source.___types});
   const replacement = {'Title$$string': 'Replacement'};
   const write = await put(id, replacement);
   assert.equal(write.status, 200);
@@ -122,7 +122,7 @@ test('E08/E09: search and count envelopes, selections, no-hit and count search t
   const result = await search(body); envelope(result); assert.deepEqual(ids(result), ['two']);
   assert.deepEqual((await request('/pages/_count', {method: 'POST', body})).data, {count: 1, _shards: {total: 1, successful: 1, failed: 0}});
   assert.equal((await request('/pages/_count?q=*', {method: 'POST'})).data.count, 2);
-  assert.deepEqual((await search({}, '/pages/_search?search_type=count')).hits, {total: 2, hits: []});
+  assert.deepEqual((await search({}, '/pages/_search?search_type=count')).hits, {total: 2, max_score: null, hits: []});
   assert.equal((await request('/_count', {method: 'POST', body})).data.count, 1);
   assert.equal((await request('/_all/Synthetic_ArticlePage/_count', {method: 'POST', body})).data.count, 1);
 });
@@ -151,7 +151,7 @@ test('error contracts: invalid JSON, media type, unsupported operations/options 
   for (const [path, method, body, expected, bodyStatus = expected] of [
     ['/pages/_search', 'POST', '{broken', 400],
     ['/pages/_search', 'POST', {query: {unknown: {}}}, 400],
-    ['/pages/_search', 'POST', {script_fields: {}}, 400],
+    ['/pages/_search', 'POST', {script_fields: {unsafe: {script: 'anything'}}}, 400],
     ['/pages/_mapping', 'GET', undefined, 501],
     ['/_stream', 'POST', {}, 501],
     ['/pages/Synthetic_Page/x/_update', 'POST', {script: 'anything'}, 501, '501'],
@@ -161,7 +161,7 @@ test('error contracts: invalid JSON, media type, unsupported operations/options 
     const result = await request(path, {method, body});
     assert.equal(result.status, expected, path); assert.equal(typeof result.data.error, 'string'); assert.equal(result.data.status, bodyStatus);
   }
-  assert.equal((await request('/pages/Synthetic_Page/x', {method: 'PUT', body: '{}', headers: {'Content-Type': 'text/plain'}})).status, 415);
+  assert.equal((await request('/pages/Synthetic_Page/x', {method: 'PUT', body: '{}', headers: {'Content-Type': 'application/octet-stream'}})).status, 415);
   assert.equal((await request('/pages/_config', {headers: {Origin: 'https://external.invalid'}})).status, 403);
 });
 

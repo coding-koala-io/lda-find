@@ -23,10 +23,10 @@ test('CMS visitor end to end: publication, type guards, language alternatives an
   assert.equal(result.hits.total, visibleCmsIds.length);
   assert.deepEqual(ids(result), visibleCmsIds);
   assert.equal(result.facets.visible.count, visibleCmsIds.length);
-  assert.deepEqual(result.hits.hits.map(hit => hit.fields.ContentLink['ID$$long']), visibleCmsIds.map(id => cmsCorpus.findIndex(entry => entry.id === id) + 1));
-  assert.ok(result.hits.hits.every(hit => hit.fields.ContentLink['ProviderName$$string'] === 'Default'));
+  assert.deepEqual(result.hits.hits.map(hit => hit.fields['ContentLink.ID$$long']), visibleCmsIds.map(id => cmsCorpus.findIndex(entry => entry.id === id) + 1));
+  assert.ok(result.hits.hits.every(hit => hit.fields['ContentLink.ProviderName$$string'] === 'Default'));
   assert.ok(result.hits.hits.every(hit => hit.fields.___types.includes('Synthetic.Content')));
-  assert.deepEqual(result.hits.hits[0].fields.Language, {'Name$$string': 'en-GB'});
+  assert.equal(result.hits.hits[0].fields['Language.Name$$string'], 'en-GB');
   const anonymous = await search({...body, query: {constant_score: {filter: cmsVisitorFilter({authenticated: false})}}});
   assert.deepEqual(ids(anonymous), visibleCmsIds.filter(id => id !== 'user-access'));
   const pagesOnly = await search({...body, filter: {terms: {___types: ['Synthetic.Page']}}});

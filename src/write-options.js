@@ -18,7 +18,7 @@ function positiveInteger(value, name) {
 export function writeOptions(values, operation = 'index') {
   keys(values, allowed[operation], 'write option');
   for (const name of common.filter(name => name !== 'refresh')) {
-    if (values[name] !== undefined && typeof values[name] !== 'string') throw new HttpError(400, `${name} must be text`);
+    if (values[name] !== undefined && (typeof values[name] !== 'string' || !values[name].length)) throw new HttpError(400, `${name} must be nonempty text`);
   }
   if (values.refresh !== undefined && ![true, false, 'true', 'false', 'wait_for'].includes(values.refresh)) throw new HttpError(400, 'refresh must be true, false or wait_for');
   if (values.consistency !== undefined && !['quorum', 'one', 'all'].includes(values.consistency)) throw new HttpError(400, 'Invalid write consistency');

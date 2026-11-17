@@ -6,7 +6,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check:clean-room": "node scripts/check-clean-room.js"
   },
   "author": "Coding Koalas Pty Ltd",
   "license": "Apache-2.0",

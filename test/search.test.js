@@ -28,13 +28,13 @@ test('20-page end to end: two types, visitor eligibility, hit filter, facets, so
   });
   envelope(result); assert.equal(result.hits.total, 7);
   assert.deepEqual(ids(result), ['page-16', 'page-14', 'page-12']);
-  assert.deepEqual(result.facets.categories, {_type: 'terms', missing: 0, terms: [{term: 'Paths', count: 7}, {term: 'Plants', count: 7}]});
+  assert.deepEqual(result.facets.categories, {_type: 'terms', missing: 0, total: 14, other: 0, terms: [{term: 'Paths', count: 7}, {term: 'Plants', count: 7}]});
   assert.deepEqual(result.facets.contentTypes.terms, [{term: 'Synthetic.ArticlePage, Synthetic', count: 7}, {term: 'Synthetic.LandingPage, Synthetic', count: 7}]);
   assert.deepEqual(result.facets.plants, {_type: 'filter', count: 7});
   assert.deepEqual(result.facets.pathsOnly.terms, [{term: 'Paths', count: 7}]);
-  assert.deepEqual(result.hits.hits.map(hit => hit.fields.ContentLink['ID$$long']), [16, 14, 12]);
-  assert.deepEqual(result.hits.hits[0].fields.Language, {'Name$$string': 'en'});
-  assert.equal(result.hits.hits[0].fields.ContentLink['ProviderName$$string'], 'Default');
+  assert.deepEqual(result.hits.hits.map(hit => hit.fields['ContentLink.ID$$long']), [16, 14, 12]);
+  assert.equal(result.hits.hits[0].fields['Language.Name$$string'], 'en');
+  assert.equal(result.hits.hits[0].fields['ContentLink.ProviderName$$string'], 'Default');
   assert.equal(Object.hasOwn(result.hits.hits[0], '_source'), false);
   assert.deepEqual(result.hits.hits[0].highlight, {'Title$$string.en': ['|pre|Garden|post| |pre|guide|post| 16']});
 });
@@ -135,7 +135,7 @@ test('term facets deduplicate arrays per document, count missing and run before 
   await put('three', {});
   const result = await search({filter: {ids: {values: ['two']}}, size: 0, facets: {tags: {terms: {field: 'Tags$$strings'}}, words: {terms: {field: 'Tags$$strings.standard', size: 1}}}});
   assert.equal(result.hits.total, 1); assert.deepEqual(result.hits.hits, []);
-  assert.deepEqual(result.facets.tags, {_type: 'terms', missing: 1, terms: [{term: 'a', count: 2}, {term: 'b', count: 1}]});
+  assert.deepEqual(result.facets.tags, {_type: 'terms', missing: 1, total: 3, other: 0, terms: [{term: 'a', count: 2}, {term: 'b', count: 1}]});
   assert.deepEqual(result.facets.words.terms, [{term: 'a', count: 2}]);
   const pastLast = await search({filter: {ids: {values: ['two']}}, from: 100, facets: {tags: {terms: {field: 'Tags$$strings'}}, words: {terms: {field: 'Tags$$strings.standard', size: 1}}}});
   assert.deepEqual(pastLast.hits.hits, []);
@@ -148,11 +148,11 @@ test('partial projections retain singleton/empty arrays; selected source and hie
   const source = {'Title$$string': 'garden', 'Tags$$strings': ['one'], 'Empty$$strings': [], 'Null': null, 'Object': {}, 'ContentLink': {'ID$$long': 1, 'ProviderName$$string': 'Default'}, '___types': ['Synthetic.Page'], 'Children': [{'Name$$string': 'one', 'ID$$long': 1}, {'Name$$string': 'two', 'ID$$long': 2}]};
   await put('_doc', source);
   const full = await search({partial_fields: {_all: {include: ['*']}}});
-  assert.deepEqual(full.hits.hits[0].fields, source);
+  assert.deepEqual(full.hits.hits[0].fields, {_all: source});
   const selected = await search({partial_fields: {content: {include: ['ContentLink', 'ContentLink.*'], exclude: ['ContentLink.ProviderName$$string']}}, fields: ['___types', 'Tags$$strings', 'Empty$$strings']});
-  assert.deepEqual(selected.hits.hits[0].fields, {ContentLink: {'ID$$long': 1}, '___types': ['Synthetic.Page'], 'Tags$$strings': ['one'], 'Empty$$strings': []});
+  assert.deepEqual(selected.hits.hits[0].fields, {content: {ContentLink: {'ID$$long': 1}}, '___types': ['Synthetic.Page'], 'Tags$$strings': ['one'], 'Empty$$strings': []});
   const children = await search({fields: ['Children.Name$$string', 'Children.ID$$long', 'Null', 'Object']});
-  assert.deepEqual(children.hits.hits[0].fields, {Children: source.Children, Null: null, Object: {}});
+  assert.deepEqual(children.hits.hits[0].fields, {'Children.Name$$string': ['one', 'two'], 'Children.ID$$long': [1, 2], Null: null, Object: {}});
 });
 
 test('nested filters isolate collection objects and numeric boost composition affects order', async t => {
@@ -169,11 +169,11 @@ test('partial projections select array children and exclude nested fields or who
   const {put, search} = await gateway(t);
   await put('one', {Obj: {'Secret$$string': 'hidden'}, Items: [{'Name$$string': 'public', 'Secret$$string': 'hidden'}, {'Name$$string': 'second', 'ID$$long': 2}], 'Empty': []});
   const selected = await search({partial_fields: {p: {include: ['Items.Name$$string']}}});
-  assert.deepEqual(selected.hits.hits[0].fields, {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second'}]});
+  assert.deepEqual(selected.hits.hits[0].fields, {p: {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second'}]}});
   const excluded = await search({partial_fields: {p: {include: ['*'], exclude: ['Obj', 'Items.Secret$$string']}}});
-  assert.deepEqual(excluded.hits.hits[0].fields, {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second', 'ID$$long': 2}], Empty: []});
+  assert.deepEqual(excluded.hits.hits[0].fields, {p: {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second', 'ID$$long': 2}], Empty: []}});
   const merged = await search({partial_fields: {names: {include: ['Items.Name$$string']}, numbers: {include: ['Items.ID$$long']}}});
-  assert.deepEqual(merged.hits.hits[0].fields, {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second', 'ID$$long': 2}]});
+  assert.deepEqual(merged.hits.hits[0].fields, {names: {Items: [{'Name$$string': 'public'}, {'Name$$string': 'second'}]}, numbers: {Items: [{}, {'ID$$long': 2}]}});
 });
 
 test('unsupported or malformed query features fail consistently even with no documents', async t => {
