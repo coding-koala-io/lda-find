@@ -6,6 +6,7 @@ import {clone, parse, stringify} from './precise-json.js';
 import {storageDirectory, checkStoragePaths} from './storage-paths.js';
 
 const identity = (index, type, id) => JSON.stringify([index, type, id]);
+export const dataVersion = 1;
 export const defaultLimits = Object.freeze({indexDocuments: 10000, storeDocuments: 25000, indexBytes: 64 * 1024 * 1024, storeBytes: 128 * 1024 * 1024, indices: 128});
 
 /** One process owns a store. A completed write is visible and saved before acknowledgement. */
@@ -27,7 +28,7 @@ export class Store {
       state = parse(readFileSync(this.file, 'utf8'));
     }
     catch (error) { if (error.code === 'ENOENT') return; throw new Error('Cannot load LDA Local Find data; repair or move the store before starting', {cause: error}); }
-    if (state?.version !== 1 || !Array.isArray(state.docs) || !Array.isArray(state.indices)) throw new Error('Invalid LDA Local Find store format');
+    if (state?.version !== dataVersion || !Array.isArray(state.docs) || !Array.isArray(state.indices)) throw new Error('Invalid LDA Local Find store format');
     for (const [index, settings] of state.indices) {
       if (typeof index !== 'string' || !Array.isArray(settings.languages) || !settings.languages.every(value => typeof value === 'string') || typeof settings.refresh !== 'boolean') throw new Error('Invalid stored index');
       this.indices.set(index, settings);
@@ -108,7 +109,7 @@ export class Store {
         let renamed = false;
         try {
           try {
-            writeFileSync(fd, '{"version":1,"docs":[', 'utf8');
+            writeFileSync(fd, `{"version":${dataVersion},"docs":[`, 'utf8');
             let separator = '';
             for (const doc of this.docs.values()) {
               writeFileSync(fd, separator + this.encode(doc).text, 'utf8'); separator = ',';

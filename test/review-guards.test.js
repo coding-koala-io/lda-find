@@ -4,8 +4,25 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import pkg from '../package.json' with {type: 'json'};
 import {checkCleanRoom} from '../scripts/check-clean-room.js';
 import {gateway, ndjson, testStorage} from './helpers.js';
+
+test('whole-folder gate permits only current release files in root dist', t => {
+  const {dataDir} = testStorage(t);
+  const dist = join(dataDir, 'dist');
+  mkdirSync(dist);
+  writeFileSync(join(dist, `lda-find-${pkg.version}.zip`), Buffer.from([0]));
+  writeFileSync(join(dist, 'manifest.json'), '{}');
+  writeFileSync(join(dist, 'SHA256SUMS'), 'synthetic');
+  assert.deepEqual(checkCleanRoom(dataDir), []);
+
+  writeFileSync(join(dist, 'stray.json'), '{}');
+  assert.deepEqual(checkCleanRoom(dataDir), [{path: 'dist/stray.json', reason: 'unexpected release output'}]);
+
+  mkdirSync(join(dist, '.stage-ABC123'));
+  assert.ok(checkCleanRoom(dataDir).some(item => item.path === 'dist/.stage-ABC123'));
+});
 
 test('whole-folder gate detects ignored binaries, disguised binary content, captures and diagnostic folders', t => {
   const {dataDir} = testStorage(t);
@@ -16,11 +33,13 @@ test('whole-folder gate detects ignored binaries, disguised binary content, capt
   const script = fileURLToPath(new URL('../scripts/check-clean-room.js', import.meta.url));
   assert.equal(spawnSync(process.execPath, [script, dataDir], {windowsHide: true}).status, 0);
   mkdirSync(join(dataDir, '.test-runtime'));
-  mkdirSync(join(dataDir, 'nested'));
+  mkdirSync(join(dataDir, 'nested/dist'), {recursive: true});
   for (const name of ['vendor.dll', 'probe.exe', 'symbols.pdb', 'recorded-request.json', 'sdk-replay.log', 'search-requests.ndjson', 'data/foundation-proof/round6-sdk-report.json']) writeFileSync(join(dataDir, name), 'synthetic');
   writeFileSync(join(dataDir, 'nested/disguised.txt'), Buffer.concat([Buffer.alloc(9000, 32), Buffer.from([77, 90, 0, 1])]));
+  writeFileSync(join(dataDir, 'nested/dist/probe.zip'), Buffer.from([0]));
   const findings = checkCleanRoom(dataDir);
-  assert.equal(findings.length, 9);
+  assert.equal(findings.length, 10);
+  assert.ok(findings.some(item => item.path === 'nested/dist/probe.zip' && item.reason === 'binary/build artifact'));
   assert.ok(findings.some(item => item.path === 'nested/disguised.txt' && item.reason === 'binary content'));
   assert.ok(findings.some(item => item.path === '.test-runtime'));
   assert.ok(findings.every(item => item.path !== 'data/foundation-proof/store.json'));

@@ -4,7 +4,9 @@ Date: 17 November 2026. Existing working-tree changes were preserved. Rounds 9 a
 
 ## Current whole-folder status
 
-Diagnostics were previously relocated to private sibling research storage outside this repository. `node scripts/check-clean-room.js` passes with **0 findings**, including ignored files and excluding Git internals. No diagnostic files were moved or deleted in rounds 9 or 9b. The private `data/foundation-proof/store.json` remains in place and excluded from publication.
+Diagnostics were previously relocated to private sibling research storage outside this repository. `node scripts/check-clean-room.js` passes with **0 findings**, including ignored files and excluding Git internals and the root `dist/` release output directory. No diagnostic files were moved or deleted in rounds 9 or 9b. The private `data/foundation-proof/store.json` remains in place and excluded from publication.
+
+`npm run release:build` writes the release assets to `dist/`. Use `npm run release:build -- <output-directory>` to write them to an external directory.
 
 A passing gate checks prohibited artifact patterns; it does not certify authorship or approve publication. Earlier historical file/blob audits and SDK replays were not rerun in this clean-room round.
 

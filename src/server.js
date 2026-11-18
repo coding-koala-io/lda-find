@@ -1,7 +1,8 @@
 import http from 'node:http';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {Store} from './store.js';
+import pkg from '../package.json' with {type: 'json'};
+import {Store, dataVersion} from './store.js';
 import {HttpError, errorCode} from './errors.js';
 import {documentRoute, handleProtocol} from './protocol-routes.js';
 import {parse, stringifyResponse} from './precise-json.js';
@@ -94,6 +95,7 @@ export function createServer(options = {}) {
       if (!authorities.has(request.headers.host?.toLowerCase())) throw new HttpError(403, 'Host is not allowed');
       if (request.headers.origin !== undefined && !loopbackOrigin(request.headers.origin)) throw new HttpError(403, 'Cross-origin requests are not supported', 'origin_not_allowed');
       const url = new URL(request.url, 'http://127.0.0.1');
+      if (request.method === 'GET' && url.pathname === '/health') return send(200, {product: 'find', version: pkg.version, dataVersion});
       if (!url.pathname.startsWith(`${prefix}/`)) throw new HttpError(403, 'Service prefix is not accepted');
       if (request.headers['content-encoding'] && request.headers['content-encoding'] !== 'identity') throw new HttpError(415, 'Compressed request bodies are not supported');
       if (request.headers['content-length'] && Number(request.headers['content-length']) > config.maxBodyBytes) throw new HttpError(413, 'Request body exceeds the local limit');

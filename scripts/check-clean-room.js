@@ -1,12 +1,14 @@
 import {readdirSync, lstatSync, openSync, readSync, closeSync} from 'node:fs';
 import {join, resolve, relative} from 'node:path';
 import {pathToFileURL, fileURLToPath} from 'node:url';
+import pkg from '../package.json' with {type: 'json'};
 
 const binary = /\.(?:dll|exe|pdb|so|dylib|node|wasm|nupkg|zip|7z|tar|gz|cache|bin|class|jar|pyc)$/i;
 const capture = /(?:request|response|capture|replay|traffic|recording).*(?:\.jsonl?|\.ndjson|\.har|\.log|\.txt)$|\.(?:ndjson|har|pcap|pcapng)$|^round\d+.*\.json$/i;
 const diagnostic = /^(?:\.tmp|\.test-runtime|\.recording-check)$|(?:sdk|query-shape|content-projection)-probe/i;
+const releaseFiles = new Set([`lda-find-${pkg.version}.zip`, 'manifest.json', 'SHA256SUMS']);
 
-/** Inspect ignored files too. Only Git's internal object database is outside scope. */
+/** Inspect ignored files too, except Git internals and the expected release files in root dist. */
 export function checkCleanRoom(root) {
   const findings = [];
   const report = (path, reason) => findings.push({path: relative(root, path).replaceAll('\\', '/'), reason});
@@ -16,6 +18,14 @@ export function checkCleanRoom(root) {
       const path = join(directory, name); const stat = lstatSync(path);
       if (stat.isSymbolicLink()) { report(path, 'link prevents whole-folder inspection'); continue; }
       if (stat.isDirectory()) {
+        if (directory === root && name === 'dist') {
+          // The release builder removes its staging directory in finally.
+          for (const entry of readdirSync(path)) {
+            const entryPath = join(path, entry);
+            if (!releaseFiles.has(entry) || !lstatSync(entryPath).isFile()) report(entryPath, 'unexpected release output');
+          }
+          continue;
+        }
         if (/^\.(?:aws|ssh)$/.test(name)) { report(path, 'private configuration'); continue; }
         if (diagnostic.test(name)) report(path, 'diagnostic folder');
         visit(path); continue;
