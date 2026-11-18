@@ -2,7 +2,7 @@ import {HttpError, keys, object, unsupported} from './errors.js';
 import {search, shards} from './search.js';
 import {compile} from './query.js';
 import {project} from './fields.js';
-import {parse, stringifyResponse} from './precise-json.js';
+import {numericTokenAt, parse, stringifyResponse} from './precise-json.js';
 import {queryWriteOptions, bulkWriteOptions} from './write-options.js';
 import {handleStatistics} from './statistics.js';
 import {urlOptions, integerOption} from './url-options.js';
@@ -21,6 +21,10 @@ export function selection(value) {
   const values = value.split(',');
   if (values.some(item => !item || item.includes('*'))) throw new HttpError(400, 'Selection requires concrete names or _all');
   return values;
+}
+
+function validateSettingsIndex(index) {
+  if (!selection(index) || index.includes(',')) throw new HttpError(400, 'Settings require one index');
 }
 
 export function json(text, fallback) {
@@ -85,6 +89,46 @@ export function documentRoute(segments) {
   return segments.length === 3 && !index.startsWith('_') && !type.startsWith('_') && type !== 'specific-languages' && !reserved.includes(id);
 }
 
+function mappingFieldType(source, name) {
+  if (Array.isArray(source[name])) {
+    source = source[name];
+    name = source.findIndex(value => value != null);
+  }
+  const value = source[name];
+  if (value == null || Array.isArray(value)) return undefined;
+  switch (typeof value) {
+    case 'number':
+    case 'bigint': {
+      const decimal = numericTokenAt(source, name) !== undefined || (typeof value === 'number' && !Number.isInteger(value));
+      return decimal ? 'double' : 'long';
+    }
+    case 'string': return 'string';
+    case 'boolean': return 'boolean';
+    case 'object': return 'object';
+  }
+}
+
+function getMapping(store, index, type) {
+  const mappings = Object.create(null);
+  const documents = store.select([index], type === undefined ? undefined : [type]);
+  if (type !== undefined) mappings[type] = {properties: Object.create(null)};
+  // Bound inference using the store's cached document sizes. Every live type
+  // still gets an entry, even when its documents are too large to inspect.
+  let remainingBytes = 1024 * 1024;
+  for (const doc of documents) {
+    const {properties} = mappings[doc.type] ??= {properties: Object.create(null)};
+    const {bytes} = store.encode(doc);
+    if (bytes > remainingBytes) continue;
+    remainingBytes -= bytes;
+    for (const name of Object.keys(doc.source)) {
+      if (Object.hasOwn(properties, name)) continue;
+      const fieldType = mappingFieldType(doc.source, name);
+      if (fieldType !== undefined) properties[name] = {type: fieldType};
+    }
+  }
+  return {[index]: {mappings}};
+}
+
 /** Routes implement only the profile described in docs/compatibility.md. */
 export function handleProtocol({store, method, segments, params, text, send, maxMultiSearchBytes = 16 * 1024 * 1024}) {
   if (handleStatistics({store, method, segments, params, text, send, json, selection})) return true;
@@ -92,6 +136,21 @@ export function handleProtocol({store, method, segments, params, text, send, max
   const route = segments.join('/');
   const operation = segments.at(-1);
   const [index, type, id, extra] = segments;
+  const mappingType = type === '_mapping' ? id : type;
+  const typedMapping = segments.length === 3 && (type === '_mapping' || id === '_mapping')
+    && (!mappingType.startsWith('_') || mappingType === '_doc');
+  const indexMapping = segments.length === 2 && type === '_mapping';
+  const mappingRead = method === 'GET' && (indexMapping || typedMapping);
+  const mappingWrite = method === 'PUT' && typedMapping;
+  if (mappingRead || mappingWrite) {
+    urlOptions(params, []);
+    validateSettingsIndex(index);
+    if (mappingType?.includes(',') || mappingType?.includes('*')) {
+      throw new HttpError(400, 'Mapping requires a concrete index and type');
+    }
+    if (mappingRead) return send(200, getMapping(store, index, mappingType));
+    return send(200, {acknowledged: true});
+  }
   const document = documentRoute(segments);
   const queryRoute = segments.length <= 3 && (method === 'POST' && ['_search', '_count'].includes(operation) || method === 'DELETE' && operation === '_query');
   const implemented = queryRoute || document && ['GET', 'PUT', 'DELETE'].includes(method)
@@ -137,7 +196,7 @@ export function handleProtocol({store, method, segments, params, text, send, max
     });
   }
   if (segments.length === 2 && type === '_config' && method === 'GET') {
-    if (!selection(index) || index.includes(',')) throw new HttpError(400, 'Settings require one index');
+    validateSettingsIndex(index);
     return send(200, {status: 'ok', item: {stats: false, admin: false, languages: ['en'], connectors: false, max_docs: store.limits.indexDocuments, version: '1.0'}}, {has_documents_limit: 'true', documents_used: String(store.select([index]).length)});
   }
   if (segments.length === 2 && type === '_clear' && ['POST', 'DELETE'].includes(method)) {

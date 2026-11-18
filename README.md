@@ -28,7 +28,7 @@ Requires Node.js 24 or later and an existing, licensed CMS 12 site configured to
 
    ```powershell
    $env:EPiServer__Find__ServiceUrl = 'http://127.0.0.1:8088/local-development-key/'
-   $env:EPiServer__Find__DefaultIndex = 'local-pages'
+   $env:EPiServer__Find__DefaultIndex = 'local_pages'
    ```
 
    Alternatively, put the same settings in the site's `appsettings.Development.json`:
@@ -38,11 +38,13 @@ Requires Node.js 24 or later and an existing, licensed CMS 12 site configured to
      "EPiServer": {
        "Find": {
          "ServiceUrl": "http://127.0.0.1:8088/local-development-key/",
-         "DefaultIndex": "local-pages"
+         "DefaultIndex": "local_pages"
        }
      }
    }
    ```
+
+   Use underscores in the index name. The Find client rejects any index name containing a hyphen as an invalid index ID.
 
 3. In the CMS administration UI, run **the site's own built-in Search & Navigation indexing scheduled job**. Use the site's search page after it finishes. On the Foundation sample, the search term parameter is `?search=jacket`.
 

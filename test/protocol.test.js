@@ -152,7 +152,7 @@ test('error contracts: invalid JSON, media type, unsupported operations/options 
     ['/pages/_search', 'POST', '{broken', 400],
     ['/pages/_search', 'POST', {query: {unknown: {}}}, 400],
     ['/pages/_search', 'POST', {script_fields: {unsafe: {script: 'anything'}}}, 400],
-    ['/pages/_mapping', 'GET', undefined, 501],
+    ['/pages/_mapping', 'PUT', {}, 501],
     ['/_stream', 'POST', {}, 501],
     ['/pages/Synthetic_Page/x/_update', 'POST', {script: 'anything'}, 501, '501'],
     ['/pages/Synthetic_Page/x?ttl=invalid', 'PUT', {}, 400],

@@ -110,7 +110,7 @@ test('Clear index is named-index scoped and durable; clear statistics is a mutat
 
 test('unsupported endpoints and methods return JSON 501 before URL-option validation', async t => {
   const {request} = await gateway(t);
-  for (const [path, method] of [['/pages/_stats/query/top', 'GET'], ['/pages/_admin/synonym/', 'GET'], ['/pages/_admin/unifiedweights/', 'GET'], ['/pages/_admin/connector_job/status/', 'GET'], ['/pages/_autocomplete/list', 'GET'], ['/pages/_didyoumean/list', 'POST'], ['/pages/Page/one/_mlt', 'GET'], ['/pages/Page/_mapping', 'PUT'], ['/_stream', 'POST'], ['/unknown', 'GET'], ['/pages/_search', 'GET'], ['/pages/_config', 'POST'], ['/pages/Page/one/_update', 'POST']]) {
+  for (const [path, method] of [['/pages/_stats/query/top', 'GET'], ['/pages/_admin/synonym/', 'GET'], ['/pages/_admin/unifiedweights/', 'GET'], ['/pages/_admin/connector_job/status/', 'GET'], ['/pages/_autocomplete/list', 'GET'], ['/pages/_didyoumean/list', 'POST'], ['/pages/Page/one/_mlt', 'GET'], ['/pages/Page/_mapping', 'DELETE'], ['/_stream', 'POST'], ['/unknown', 'GET'], ['/pages/_search', 'GET'], ['/pages/_config', 'POST'], ['/pages/Page/one/_update', 'POST']]) {
     for (const options of ['', '?tags=private&size=1000&from=2026-01-01&to=2026-11-17&interval=hour&dojo.preventCache=123', '?routing=&unknown=&unknown=x']) {
       const reply = await request(path + options, {method});
       assert.equal(reply.status, 501, `${method} ${path}`); assert.equal(typeof reply.data.error, 'string'); assert.ok(reply.data.error.length < 250);
